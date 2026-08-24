@@ -256,7 +256,20 @@ if uploaded_files:
                 except zipfile.BadZipFile:
                     st.error(f"❌ **{uf.name}** bukan file ZIP yang valid / rusak.")
                 except Exception as e:
-                    st.error(f"❌ Gagal membuka **{uf.name}**: {e}")
+                    err_text = str(e)
+                    if RAR_SUPPORTED and ("Cannot find working tool" in err_text or "RarCannotExec" in type(e).__name__):
+                        st.error(
+                            f"❌ Gagal membuka **{uf.name}**: program `unrar`/`unar` tidak ditemukan di sistem.\n\n"
+                            "Library Python `rarfile` sudah terpasang, tapi proses ekstraksi RAR "
+                            "sebenarnya butuh program eksternal. Install salah satu:\n"
+                            "- **Windows**: download UnRAR dari rarlab.com/rar_add.htm, taruh `unrar.exe` "
+                            "di folder yang sama dengan script ini atau tambahkan ke PATH\n"
+                            "- **macOS**: `brew install unar`\n"
+                            "- **Linux**: `sudo apt install unrar`\n\n"
+                            "Lalu restart aplikasi ini."
+                        )
+                    else:
+                        st.error(f"❌ Gagal membuka **{uf.name}**: {err_text}")
             elif is_image(uf.name):
                 rel_path = str(Path(uf.name).with_suffix(""))
                 image_sources.append((rel_path, uf.getvalue(), uf.name))
