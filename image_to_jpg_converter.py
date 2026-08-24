@@ -27,11 +27,19 @@ except ImportError:
 
 st.set_page_config(page_title="Image → JPG Converter", page_icon="🖼️", layout="centered")
 
+IMAGE_EXTENSIONS = {
+    ".png", ".bmp", ".tiff", ".tif", ".webp", ".gif", ".ico",
+    ".jfif", ".jpg", ".jpeg", ".ppm", ".pgm", ".pbm", ".tga",
+}
+if HEIC_SUPPORTED:
+    IMAGE_EXTENSIONS |= {".heic", ".heif"}
+
 st.title("🖼️ Konversi Gambar ke JPG (Kualitas Tinggi)")
 st.write(
-    "Upload gambar dalam format apa pun (PNG, BMP, TIFF, WEBP, GIF, ICO"
+    "Upload gambar satuan (PNG, BMP, TIFF, WEBP, GIF, ICO"
     + (", HEIC/HEIF" if HEIC_SUPPORTED else "")
-    + ") lalu unduh hasilnya dalam format JPG tanpa kehilangan kualitas signifikan."
+    + ") **atau upload file ZIP** berisi banyak gambar/folder — sistem akan otomatis "
+    "mendeteksi dan mengonversi semua gambar yang ditemukan ke JPG tanpa kehilangan kualitas signifikan."
 )
 
 if not HEIC_SUPPORTED:
@@ -94,29 +102,78 @@ def convert_to_jpg(file_bytes: bytes, filename: str, quality: int, subsampling: 
     return output.getvalue()
 
 
+def gather_from_zip(zip_bytes: bytes):
+    """Cari semua file gambar di dalam ZIP (termasuk di dalam subfolder).
+
+    Mengembalikan list of (relative_path_no_ext, raw_bytes).
+    File non-gambar, folder __MACOSX, dan file tersembunyi (diawali '.') diabaikan.
+    """
+    found = []
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            name = info.filename
+            if "__MACOSX" in name or Path(name).name.startswith("."):
+                continue
+            ext = Path(name).suffix.lower()
+            if ext in IMAGE_EXTENSIONS:
+                with zf.open(info) as f:
+                    raw = f.read()
+                # Simpan struktur folder relatif, tapi tanpa ekstensi (akan diganti .jpg nanti)
+                rel_path_no_ext = str(Path(name).with_suffix(""))
+                found.append((rel_path_no_ext, raw))
+    return found
+
+
 uploaded_files = st.file_uploader(
-    "Pilih satu atau beberapa gambar",
-    type=["png", "bmp", "tiff", "tif", "webp", "gif", "ico", "jfif", "jpg", "jpeg"]
+    "Pilih gambar satuan, atau upload file ZIP berisi banyak gambar",
+    type=["png", "bmp", "tiff", "tif", "webp", "gif", "ico", "jfif", "jpg", "jpeg", "zip"]
     + (["heic", "heif"] if HEIC_SUPPORTED else []),
     accept_multiple_files=True,
 )
 
 if uploaded_files:
-    st.subheader(f"📂 {len(uploaded_files)} file siap dikonversi")
+    # Kumpulkan semua sumber gambar: (nama_relatif_tanpa_ext, raw_bytes, asal_file)
+    image_sources = []
+    zip_count = 0
 
-    results = []  # list of (new_filename, jpg_bytes)
+    with st.spinner("Memindai file yang diupload..."):
+        for uf in uploaded_files:
+            ext = Path(uf.name).suffix.lower()
+            if ext == ".zip":
+                zip_count += 1
+                try:
+                    found = gather_from_zip(uf.getvalue())
+                    if not found:
+                        st.warning(f"⚠️ Tidak ada gambar yang ditemukan di dalam **{uf.name}**.")
+                    for rel_path, raw in found:
+                        image_sources.append((rel_path, raw, uf.name))
+                except zipfile.BadZipFile:
+                    st.error(f"❌ **{uf.name}** bukan file ZIP yang valid.")
+            elif ext in IMAGE_EXTENSIONS:
+                rel_path = str(Path(uf.name).with_suffix(""))
+                image_sources.append((rel_path, uf.getvalue(), uf.name))
+
+    if zip_count:
+        st.caption(f"🔍 {zip_count} file ZIP dipindai, ditemukan {len(image_sources)} gambar total.")
+
+    st.subheader(f"📂 {len(image_sources)} gambar siap dikonversi")
+
+    results = []  # list of (new_filename_with_path, jpg_bytes)
     errors = []
 
     progress = st.progress(0, text="Memproses gambar...")
 
-    for i, uf in enumerate(uploaded_files):
+    for i, (rel_path, raw_bytes, source_name) in enumerate(image_sources):
         try:
-            jpg_bytes = convert_to_jpg(uf.getvalue(), uf.name, quality, subsampling)
-            new_name = Path(uf.name).stem + ".jpg"
+            jpg_bytes = convert_to_jpg(raw_bytes, rel_path, quality, subsampling)
+            new_name = rel_path + ".jpg"
             results.append((new_name, jpg_bytes))
         except Exception as e:
-            errors.append((uf.name, str(e)))
-        progress.progress((i + 1) / len(uploaded_files), text=f"Memproses {uf.name}...")
+            errors.append((f"{source_name} → {rel_path}", str(e)))
+        if image_sources:
+            progress.progress((i + 1) / len(image_sources), text=f"Memproses {rel_path}...")
 
     progress.empty()
 
@@ -129,7 +186,8 @@ if uploaded_files:
         st.success(f"✅ {len(results)} gambar berhasil dikonversi ke JPG!")
 
         # Preview + tombol download per file
-        for new_name, jpg_bytes in results:
+        for idx, (new_name, jpg_bytes) in enumerate(results):
+            flat_name = Path(new_name).name  # nama file saja, tanpa path folder, untuk download tunggal
             col1, col2 = st.columns([1, 2])
             with col1:
                 st.image(jpg_bytes, caption=new_name, use_container_width=True)
@@ -140,9 +198,9 @@ if uploaded_files:
                 st.download_button(
                     label="⬇️ Download JPG",
                     data=jpg_bytes,
-                    file_name=new_name,
+                    file_name=flat_name,
                     mime="image/jpeg",
-                    key=f"dl_{new_name}",
+                    key=f"dl_{idx}_{new_name}",
                 )
             st.divider()
 
